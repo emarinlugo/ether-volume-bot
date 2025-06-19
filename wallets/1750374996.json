@@ -1,0 +1,16 @@
+[
+  {
+    "address": "0x54111964Ffe1A82eD91617d8a31E82d1C21dAaE1",
+    "privateKey": "0xe717d5800cd58f4b9cfb9d88950b93b42d2843899c24152feaa7e9639944db33",
+    "mnemonic": "document review display chronic damage rough dog maid wrestle trade atom disagree",
+    "amount": "0.002357",
+    "funded": 0
+  },
+  {
+    "address": "0xAA493993B1339f6CEc37f8c43f7af488ec87E1e2",
+    "privateKey": "0x4cf4dde38dc15f5a9f6912f29db05cde37a0307fc3dbe22a10144c7115763fa6",
+    "mnemonic": "ball chalk frozen thumb shoulder loan error scrap stick drastic early sponsor",
+    "amount": "0.001748",
+    "funded": 0
+  }
+]
