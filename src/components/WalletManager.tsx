@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Wallet, Plus, Trash2, RefreshCw, Eye, EyeOff, Copy, CheckCircle } from 'lucide-react';
+import { Wallet, Plus, Trash2, RefreshCw, Eye, EyeOff, Copy, CheckCircle, Download, Upload } from 'lucide-react';
 import { WalletData, BotConfig, TradingLog } from '../types';
+import { WalletService } from '../services/walletService';
 
 interface WalletManagerProps {
   wallets: WalletData[];
@@ -14,29 +15,28 @@ const WalletManager: React.FC<WalletManagerProps> = ({ wallets, setWallets, conf
   const [showPrivateKeys, setShowPrivateKeys] = useState(false);
   const [copiedAddress, setCopiedAddress] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
 
   const generateWallets = async () => {
+    if (config.subWalletNum <= 0) {
+      addLog({ type: 'error', message: 'Configura el número de wallets antes de generar' });
+      return;
+    }
+
     setIsGenerating(true);
-    addLog({ type: 'info', message: `Generando ${config.subWalletNum} wallets...` });
+    addLog({ type: 'info', message: `Generando ${config.subWalletNum} wallets reales...` });
     
     try {
-      // Simulate wallet generation (in real implementation, this would call the backend)
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      // Generar wallets reales usando ethers
+      const newWallets = WalletService.generateWallets(config.subWalletNum, config);
       
-      const newWallets: WalletData[] = Array.from({ length: config.subWalletNum }, (_, i) => ({
-        address: `0x${Math.random().toString(16).substr(2, 40)}`,
-        privateKey: `0x${Math.random().toString(16).substr(2, 64)}`,
-        mnemonic: 'example mnemonic phrase for wallet ' + (i + 1),
-        amount: Math.random() * (config.amountMax - config.amountMin) + config.amountMin,
-        funded: 0,
-        balance: 0,
-        status: 'idle' as const
-      }));
+      // Guardar wallets
+      const fileName = await WalletService.saveWalletsToFile(newWallets);
       
       setWallets(newWallets);
       addLog({ 
         type: 'success', 
-        message: `${config.subWalletNum} wallets generados exitosamente` 
+        message: `${config.subWalletNum} wallets reales generados y guardados en ${fileName}` 
       });
     } catch (error) {
       addLog({ 
@@ -46,6 +46,48 @@ const WalletManager: React.FC<WalletManagerProps> = ({ wallets, setWallets, conf
     } finally {
       setIsGenerating(false);
     }
+  };
+
+  const loadWallets = async () => {
+    setIsLoading(true);
+    try {
+      const loadedWallets = await WalletService.loadWalletsFromFile();
+      if (loadedWallets.length > 0) {
+        setWallets(loadedWallets);
+        addLog({ 
+          type: 'success', 
+          message: `${loadedWallets.length} wallets cargados desde archivo` 
+        });
+      } else {
+        addLog({ type: 'warning', message: 'No se encontraron wallets guardados' });
+      }
+    } catch (error) {
+      addLog({ 
+        type: 'error', 
+        message: 'Error cargando wallets: ' + (error as Error).message 
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const exportWallets = () => {
+    if (wallets.length === 0) {
+      addLog({ type: 'warning', message: 'No hay wallets para exportar' });
+      return;
+    }
+
+    const dataStr = JSON.stringify(wallets, null, 2);
+    const dataUri = 'data:application/json;charset=utf-8,'+ encodeURIComponent(dataStr);
+    
+    const exportFileDefaultName = `volume-bot-wallets-${new Date().toISOString().split('T')[0]}.json`;
+    
+    const linkElement = document.createElement('a');
+    linkElement.setAttribute('href', dataUri);
+    linkElement.setAttribute('download', exportFileDefaultName);
+    linkElement.click();
+
+    addLog({ type: 'success', message: `Wallets exportados a ${exportFileDefaultName}` });
   };
 
   const deleteWallet = (index: number) => {
@@ -62,6 +104,11 @@ const WalletManager: React.FC<WalletManagerProps> = ({ wallets, setWallets, conf
     } catch (error) {
       console.error('Error copying to clipboard:', error);
     }
+  };
+
+  const validateWallet = (wallet: WalletData): boolean => {
+    return WalletService.validateAddress(wallet.address) && 
+           WalletService.validatePrivateKey(wallet.privateKey);
   };
 
   const getStatusColor = (status: WalletData['status']) => {
@@ -102,7 +149,7 @@ const WalletManager: React.FC<WalletManagerProps> = ({ wallets, setWallets, conf
             <div>
               <h2 className="text-xl font-semibold">Gestión de Wallets</h2>
               <p className="text-sm text-dark-400">
-                {wallets.length} wallets configurados
+                {wallets.length} wallets configurados • {wallets.filter(validateWallet).length} válidos
               </p>
             </div>
           </div>
@@ -117,10 +164,32 @@ const WalletManager: React.FC<WalletManagerProps> = ({ wallets, setWallets, conf
                 {showPrivateKeys ? 'Ocultar' : 'Mostrar'} Claves
               </span>
             </button>
+
+            <button
+              onClick={loadWallets}
+              disabled={isLoading}
+              className="flex items-center space-x-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 rounded-lg transition-colors"
+            >
+              {isLoading ? (
+                <RefreshCw className="w-4 h-4 animate-spin" />
+              ) : (
+                <Upload className="w-4 h-4" />
+              )}
+              <span className="text-sm">Cargar</span>
+            </button>
+
+            <button
+              onClick={exportWallets}
+              disabled={wallets.length === 0}
+              className="flex items-center space-x-2 px-4 py-2 bg-green-600 hover:bg-green-700 disabled:opacity-50 rounded-lg transition-colors"
+            >
+              <Download className="w-4 h-4" />
+              <span className="text-sm">Exportar</span>
+            </button>
             
             <button
               onClick={generateWallets}
-              disabled={isGenerating}
+              disabled={isGenerating || config.subWalletNum <= 0}
               className="flex items-center space-x-2 px-4 py-2 bg-primary-600 hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg transition-colors"
             >
               {isGenerating ? (
@@ -182,62 +251,57 @@ const WalletManager: React.FC<WalletManagerProps> = ({ wallets, setWallets, conf
             <p className="text-dark-400 mb-4">No hay wallets configurados</p>
             <button
               onClick={generateWallets}
-              className="px-6 py-3 bg-primary-600 hover:bg-primary-700 rounded-lg transition-colors"
+              disabled={config.subWalletNum <= 0}
+              className="px-6 py-3 bg-primary-600 hover:bg-primary-700 disabled:opacity-50 rounded-lg transition-colors"
             >
-              Generar Wallets
+              Generar Wallets Reales
             </button>
+            {config.subWalletNum <= 0 && (
+              <p className="text-xs text-red-400 mt-2">
+                Configura el número de wallets en la pestaña de Configuración
+              </p>
+            )}
           </div>
         ) : (
           <div className="space-y-3 max-h-96 overflow-y-auto custom-scrollbar">
             <AnimatePresence>
-              {wallets.map((wallet, index) => (
-                <motion.div
-                  key={wallet.address}
-                  initial={{ opacity: 0, x: -20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: 20 }}
-                  className="bg-dark-700/30 rounded-lg p-4 border border-dark-600"
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center space-x-3 mb-2">
-                        <div className={`w-3 h-3 rounded-full ${getStatusColor(wallet.status)}`}></div>
-                        <span className="text-sm font-medium">Wallet #{index + 1}</span>
-                        <span className="text-xs text-dark-400">{getStatusText(wallet.status)}</span>
-                      </div>
-                      
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
-                        <div>
-                          <label className="text-dark-400">Dirección:</label>
-                          <div className="flex items-center space-x-2 mt-1">
-                            <code className="bg-dark-800 px-2 py-1 rounded text-xs font-mono truncate">
-                              {wallet.address}
-                            </code>
-                            <button
-                              onClick={() => copyToClipboard(wallet.address, wallet.address)}
-                              className="p-1 hover:bg-dark-600 rounded transition-colors"
-                            >
-                              {copiedAddress === wallet.address ? (
-                                <CheckCircle className="w-4 h-4 text-green-500" />
-                              ) : (
-                                <Copy className="w-4 h-4 text-dark-400" />
-                              )}
-                            </button>
-                          </div>
+              {wallets.map((wallet, index) => {
+                const isValid = validateWallet(wallet);
+                return (
+                  <motion.div
+                    key={wallet.address}
+                    initial={{ opacity: 0, x: -20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    exit={{ opacity: 0, x: 20 }}
+                    className={`bg-dark-700/30 rounded-lg p-4 border ${
+                      isValid ? 'border-dark-600' : 'border-red-500/50'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center space-x-3 mb-2">
+                          <div className={`w-3 h-3 rounded-full ${getStatusColor(wallet.status)}`}></div>
+                          <span className="text-sm font-medium">Wallet #{index + 1}</span>
+                          <span className="text-xs text-dark-400">{getStatusText(wallet.status)}</span>
+                          {!isValid && (
+                            <span className="text-xs text-red-400 bg-red-500/20 px-2 py-1 rounded">
+                              ⚠️ Inválido
+                            </span>
+                          )}
                         </div>
                         
-                        {showPrivateKeys && (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
                           <div>
-                            <label className="text-dark-400">Clave Privada:</label>
+                            <label className="text-dark-400">Dirección:</label>
                             <div className="flex items-center space-x-2 mt-1">
                               <code className="bg-dark-800 px-2 py-1 rounded text-xs font-mono truncate">
-                                {wallet.privateKey}
+                                {wallet.address}
                               </code>
                               <button
-                                onClick={() => copyToClipboard(wallet.privateKey, wallet.address + '_pk')}
+                                onClick={() => copyToClipboard(wallet.address, wallet.address)}
                                 className="p-1 hover:bg-dark-600 rounded transition-colors"
                               >
-                                {copiedAddress === wallet.address + '_pk' ? (
+                                {copiedAddress === wallet.address ? (
                                   <CheckCircle className="w-4 h-4 text-green-500" />
                                 ) : (
                                   <Copy className="w-4 h-4 text-dark-400" />
@@ -245,33 +309,63 @@ const WalletManager: React.FC<WalletManagerProps> = ({ wallets, setWallets, conf
                               </button>
                             </div>
                           </div>
-                        )}
-                        
-                        <div>
-                          <label className="text-dark-400">Cantidad Asignada:</label>
-                          <div className="text-primary-400 font-medium">
-                            {wallet.amount.toFixed(6)} ETH
+                          
+                          {showPrivateKeys && (
+                            <div>
+                              <label className="text-dark-400">Clave Privada:</label>
+                              <div className="flex items-center space-x-2 mt-1">
+                                <code className="bg-dark-800 px-2 py-1 rounded text-xs font-mono truncate">
+                                  {wallet.privateKey}
+                                </code>
+                                <button
+                                  onClick={() => copyToClipboard(wallet.privateKey, wallet.address + '_pk')}
+                                  className="p-1 hover:bg-dark-600 rounded transition-colors"
+                                >
+                                  {copiedAddress === wallet.address + '_pk' ? (
+                                    <CheckCircle className="w-4 h-4 text-green-500" />
+                                  ) : (
+                                    <Copy className="w-4 h-4 text-dark-400" />
+                                  )}
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                          
+                          <div>
+                            <label className="text-dark-400">Cantidad Asignada:</label>
+                            <div className="text-primary-400 font-medium">
+                              {wallet.amount.toFixed(6)} ETH
+                            </div>
                           </div>
-                        </div>
-                        
-                        <div>
-                          <label className="text-dark-400">Fondos:</label>
-                          <div className="text-green-400 font-medium">
-                            {wallet.funded.toFixed(6)} ETH
+                          
+                          <div>
+                            <label className="text-dark-400">Fondos:</label>
+                            <div className="text-green-400 font-medium">
+                              {wallet.funded.toFixed(6)} ETH
+                            </div>
                           </div>
+
+                          {wallet.mnemonic && (
+                            <div className="md:col-span-2">
+                              <label className="text-dark-400">Mnemonic:</label>
+                              <div className="text-xs text-dark-300 bg-dark-800 p-2 rounded mt-1 font-mono">
+                                {showPrivateKeys ? wallet.mnemonic : '••• ••• ••• •••'}
+                              </div>
+                            </div>
+                          )}
                         </div>
                       </div>
+                      
+                      <button
+                        onClick={() => deleteWallet(index)}
+                        className="ml-4 p-2 text-red-400 hover:bg-red-500/20 rounded-lg transition-colors"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
                     </div>
-                    
-                    <button
-                      onClick={() => deleteWallet(index)}
-                      className="ml-4 p-2 text-red-400 hover:bg-red-500/20 rounded-lg transition-colors"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
-                </motion.div>
-              ))}
+                  </motion.div>
+                );
+              })}
             </AnimatePresence>
           </div>
         )}

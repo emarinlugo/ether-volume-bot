@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Play, Pause, Square, TrendingUp, DollarSign, Activity, AlertTriangle } from 'lucide-react';
 import { BotConfig, WalletData, TradingLog, TradingStats } from '../types';
+import { ConfigService } from '../services/configService';
+import { TradingService } from '../services/tradingService';
 
 interface TradingPanelProps {
   config: BotConfig;
@@ -25,32 +27,23 @@ const TradingPanel: React.FC<TradingPanelProps> = ({
   const [currentWallet, setCurrentWallet] = useState<string | null>(null);
   const [nextTradeIn, setNextTradeIn] = useState<number>(0);
   const [errors, setErrors] = useState<string[]>([]);
+  const [tradingService, setTradingService] = useState<TradingService | null>(null);
 
   // Validation
   const validateConfig = (): string[] => {
-    const errors: string[] = [];
-    
-    if (!config.targetTokenAddress) {
-      errors.push('Dirección del token objetivo requerida');
-    }
-    
-    if (!config.baseWalletAddress) {
-      errors.push('Dirección de wallet base requerida');
-    }
-    
-    if (!config.baseWalletPrivateKey) {
-      errors.push('Clave privada de wallet base requerida');
-    }
+    const configErrors = ConfigService.validateConfig(config);
+    const walletErrors: string[] = [];
     
     if (wallets.length === 0) {
-      errors.push('No hay wallets configurados');
+      walletErrors.push('No hay wallets configurados');
+    } else {
+      const fundedWallets = wallets.filter(w => w.funded > 0);
+      if (fundedWallets.length === 0) {
+        walletErrors.push('No hay wallets con fondos disponibles');
+      }
     }
     
-    if (config.amountMin >= config.amountMax) {
-      errors.push('La cantidad mínima debe ser menor que la máxima');
-    }
-    
-    return errors;
+    return [...configErrors, ...walletErrors];
   };
 
   useEffect(() => {
@@ -78,77 +71,46 @@ const TradingPanel: React.FC<TradingPanelProps> = ({
     }
     
     setIsRunning(true);
-    addLog({ type: 'info', message: 'Iniciando bot de trading...' });
+    addLog({ type: 'info', message: 'Iniciando bot de trading con configuración validada...' });
     
-    // Simulate trading process
-    simulateTrading();
+    // Crear servicio de trading con configuración actual
+    const service = new TradingService(config);
+    setTradingService(service);
+    
+    try {
+      await service.startTrading(
+        wallets,
+        addLog,
+        (newStats) => {
+          updateStats(newStats);
+          // Actualizar wallet actual
+          const currentIndex = service.getCurrentWalletIndex();
+          const activeWallets = wallets.filter(w => w.funded > 0);
+          if (currentIndex < activeWallets.length) {
+            setCurrentWallet(activeWallets[currentIndex].address);
+          }
+        }
+      );
+    } catch (error) {
+      addLog({ 
+        type: 'error', 
+        message: `Error en trading: ${(error as Error).message}` 
+      });
+    } finally {
+      setIsRunning(false);
+      setCurrentWallet(null);
+      setTradingService(null);
+    }
   };
 
   const stopTrading = () => {
+    if (tradingService) {
+      tradingService.stopTrading();
+    }
     setIsRunning(false);
     setCurrentWallet(null);
     setNextTradeIn(0);
-    addLog({ type: 'info', message: 'Bot de trading detenido' });
-  };
-
-  const simulateTrading = async () => {
-    // This would be replaced with actual trading logic
-    const activeWallets = wallets.filter(w => w.funded > 0);
-    
-    for (let i = 0; i < activeWallets.length && isRunning; i++) {
-      const wallet = activeWallets[i];
-      setCurrentWallet(wallet.address);
-      
-      // Simulate buy
-      addLog({
-        type: 'info',
-        message: `Comprando tokens con wallet ${wallet.address.slice(0, 8)}...`,
-        walletAddress: wallet.address,
-        amount: wallet.amount
-      });
-      
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      addLog({
-        type: 'success',
-        message: `Compra exitosa - Hash: 0x${Math.random().toString(16).substr(2, 64)}`,
-        walletAddress: wallet.address,
-        txHash: `0x${Math.random().toString(16).substr(2, 64)}`
-      });
-      
-      // Random delay
-      const delay = Math.random() * (config.maxInterval - config.minInterval) + config.minInterval;
-      setNextTradeIn(delay);
-      
-      await new Promise(resolve => setTimeout(resolve, delay));
-      
-      // Simulate sell
-      addLog({
-        type: 'info',
-        message: `Vendiendo tokens con wallet ${wallet.address.slice(0, 8)}...`,
-        walletAddress: wallet.address
-      });
-      
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      addLog({
-        type: 'success',
-        message: `Venta exitosa - Hash: 0x${Math.random().toString(16).substr(2, 64)}`,
-        walletAddress: wallet.address,
-        txHash: `0x${Math.random().toString(16).substr(2, 64)}`
-      });
-      
-      // Update stats
-      updateStats({
-        totalTrades: stats.totalTrades + 2,
-        successfulTrades: stats.successfulTrades + 2,
-        totalVolume: stats.totalVolume + wallet.amount * 2
-      });
-    }
-    
-    setIsRunning(false);
-    setCurrentWallet(null);
-    addLog({ type: 'success', message: 'Ciclo de trading completado' });
+    addLog({ type: 'info', message: 'Bot de trading detenido por el usuario' });
   };
 
   const formatTime = (ms: number) => {
@@ -156,6 +118,18 @@ const TradingPanel: React.FC<TradingPanelProps> = ({
     const minutes = Math.floor(seconds / 60);
     return `${minutes}:${(seconds % 60).toString().padStart(2, '0')}`;
   };
+
+  const getChainName = (chainId: number) => {
+    switch (chainId) {
+      case 56: return 'BSC';
+      case 1: return 'Ethereum';
+      case 11155111: return 'Sepolia';
+      default: return 'Desconocido';
+    }
+  };
+
+  const fundedWallets = wallets.filter(w => w.funded > 0);
+  const totalFunds = fundedWallets.reduce((sum, w) => sum + w.funded, 0);
 
   return (
     <div className="space-y-6">
@@ -173,7 +147,7 @@ const TradingPanel: React.FC<TradingPanelProps> = ({
             <div>
               <h2 className="text-xl font-semibold">Panel de Trading</h2>
               <p className="text-sm text-dark-400">
-                Estado: {isRunning ? 'Activo' : 'Inactivo'}
+                Estado: {isRunning ? 'Activo' : 'Inactivo'} • {fundedWallets.length} wallets listos
               </p>
             </div>
           </div>
@@ -262,7 +236,7 @@ const TradingPanel: React.FC<TradingPanelProps> = ({
           animate={{ opacity: 1, y: 0 }}
           className="glass-effect rounded-xl p-6"
         >
-          <h3 className="text-lg font-semibold mb-4">Estado Actual</h3>
+          <h3 className="text-lg font-semibold mb-4">Estado Actual del Trading</h3>
           
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
@@ -275,7 +249,7 @@ const TradingPanel: React.FC<TradingPanelProps> = ({
                     {currentWallet}
                   </code>
                 ) : (
-                  <span className="text-dark-400">Ninguno</span>
+                  <span className="text-dark-400">Preparando...</span>
                 )}
               </div>
             </div>
@@ -295,14 +269,14 @@ const TradingPanel: React.FC<TradingPanelProps> = ({
           <div className="mt-4">
             <div className="flex justify-between text-sm text-dark-400 mb-2">
               <span>Progreso del Ciclo</span>
-              <span>{wallets.filter(w => w.funded > 0).length} wallets</span>
+              <span>{fundedWallets.length} wallets con fondos</span>
             </div>
             <div className="w-full bg-dark-700 rounded-full h-2">
               <div 
                 className="bg-gradient-to-r from-primary-500 to-purple-600 h-2 rounded-full transition-all duration-300"
                 style={{ 
                   width: `${currentWallet ? 
-                    ((wallets.findIndex(w => w.address === currentWallet) + 1) / wallets.length) * 100 : 0
+                    ((fundedWallets.findIndex(w => w.address === currentWallet) + 1) / fundedWallets.length) * 100 : 0
                   }%` 
                 }}
               ></div>
@@ -318,7 +292,7 @@ const TradingPanel: React.FC<TradingPanelProps> = ({
         transition={{ delay: 0.1 }}
         className="glass-effect rounded-xl p-6"
       >
-        <h3 className="text-lg font-semibold mb-4">Resumen de Configuración</h3>
+        <h3 className="text-lg font-semibold mb-4">Resumen de Configuración Validada</h3>
         
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 text-sm">
           <div>
@@ -331,13 +305,20 @@ const TradingPanel: React.FC<TradingPanelProps> = ({
           <div>
             <label className="text-dark-400">Blockchain:</label>
             <div className="text-white">
-              {config.chainId === 56 ? 'BSC' : config.chainId === 1 ? 'Ethereum' : 'Sepolia'}
+              {getChainName(config.chainId)} ({config.testVersion ? 'Testnet' : 'Mainnet'})
             </div>
           </div>
           
           <div>
-            <label className="text-dark-400">Sub-Wallets:</label>
-            <div className="text-white">{config.subWalletNum}</div>
+            <label className="text-dark-400">Wallets Configurados:</label>
+            <div className="text-white">{wallets.length} total • {fundedWallets.length} con fondos</div>
+          </div>
+          
+          <div>
+            <label className="text-dark-400">Fondos Totales:</label>
+            <div className="text-green-400 font-medium">
+              {totalFunds.toFixed(6)} ETH
+            </div>
           </div>
           
           <div>
@@ -348,16 +329,33 @@ const TradingPanel: React.FC<TradingPanelProps> = ({
           </div>
           
           <div>
-            <label className="text-dark-400">Intervalo:</label>
+            <label className="text-dark-400">Intervalo de Trading:</label>
             <div className="text-white">
               {config.minInterval/1000}s - {config.maxInterval/1000}s
             </div>
           </div>
           
           <div>
-            <label className="text-dark-400">Modo:</label>
+            <label className="text-dark-400">Fee de Reserva:</label>
+            <div className="text-yellow-400">
+              {config.fee} ETH por wallet
+            </div>
+          </div>
+          
+          <div>
+            <label className="text-dark-400">RPC Configurado:</label>
             <div className="text-white">
-              {config.testVersion ? 'Prueba' : 'Producción'}
+              {config.chainId === 56 && config.rpcEndpoints.bsc ? '✅ BSC' :
+               config.chainId === 1 && config.rpcEndpoints.eth ? '✅ Ethereum' :
+               config.chainId === 11155111 && config.rpcEndpoints.sepolia ? '✅ Sepolia' :
+               '❌ No configurado'}
+            </div>
+          </div>
+          
+          <div>
+            <label className="text-dark-400">Estado de Configuración:</label>
+            <div className={errors.length === 0 ? 'text-green-400' : 'text-red-400'}>
+              {errors.length === 0 ? '✅ Válida' : `❌ ${errors.length} errores`}
             </div>
           </div>
         </div>
